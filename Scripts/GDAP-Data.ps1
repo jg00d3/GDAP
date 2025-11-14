@@ -19,13 +19,9 @@
       - Script name
       - Function name
 
-    Graph modules used:
-      - Microsoft.Graph.Beta
-      - Microsoft.Graph.Beta.RoleManagement (optional)
-
-.NOTES
-    Author: ChatGPT (Umetech Automation Suite)
-    File  : GDAP-Data.ps1
+    NOTE:
+      Microsoft.Graph modules are installed/imported by GDAP-Modules.ps1.
+      This file does NOT import modules at top-level to avoid hangs.
 #>
 
 # ---------------------------------------------------------------------
@@ -62,28 +58,8 @@ if (-not (Get-Command Write-GdapError -ErrorAction SilentlyContinue)) {
     }
 }
 
-
-# ---------------------------------------------------------------------
-# Import Graph modules (minimal required)
-# ---------------------------------------------------------------------
-
-try {
-    Import-Module Microsoft.Graph.Beta -ErrorAction Stop
-    Write-GdapLog -Level 'OK' -Script $Script:Name -Function 'Import-Modules' -Message 'Imported Microsoft.Graph.Beta'
-}
-catch {
-    Write-GdapError -Script $Script:Name -Function 'Import-Modules' -Message "Failed to import Microsoft.Graph.Beta: $($_.Exception.Message)"
-    throw
-}
-
-# Optional but useful for role definitions
-try {
-    Import-Module Microsoft.Graph.Beta.RoleManagement -ErrorAction SilentlyContinue
-    Write-GdapLog -Level 'OK' -Script $Script:Name -Function 'Import-Modules' -Message 'Imported Microsoft.Graph.Beta.RoleManagement (optional)'
-}
-catch {
-    Write-GdapLog -Level 'WARN' -Script $Script:Name -Function 'Import-Modules' -Message 'Graph Beta RoleManagement module not available; continuing.'
-}
+# Initialization info only (no module import)
+Write-GdapLog -Level 'INFO' -Script $Script:Name -Function 'Init' -Message 'GDAP Data module loaded.'
 
 
 # ---------------------------------------------------------------------
@@ -194,8 +170,8 @@ function Get-GdapRoleDefinitionsMap {
 
     # Return grouped hash tables
     return @{
-        ById   = $defs | Group-Object -Property Id           -AsHashTable
-        ByName = $defs | Group-Object -Property DisplayName  -AsHashTable
+        ById   = $defs | Group-Object -Property Id          -AsHashTable
+        ByName = $defs | Group-Object -Property DisplayName -AsHashTable
     }
 }
 
@@ -255,13 +231,10 @@ function Get-GdapAccessAssignments {
             if (-not $aa.AccessDetails.UnifiedRoles) { continue }
 
             foreach ($ur in $aa.AccessDetails.UnifiedRoles) {
-                $roleName = $null
+                $roleName = "<Unknown Role>"
 
                 if ($RoleMap.ById.ContainsKey($ur.RoleDefinitionId)) {
                     $roleName = $RoleMap.ById[$ur.RoleDefinitionId].DisplayName
-                }
-                else {
-                    $roleName = "<Unknown Role>"
                 }
 
                 $results.Add([pscustomobject]@{
@@ -288,28 +261,16 @@ function Get-GdapAccessAssignments {
 # ---------------------------------------------------------------------
 
 function Get-GdapRelationshipsTable {
-    <#
-    .SYNOPSIS
-        Returns relationships in table-friendly format.
-    #>
     param([Parameter(Mandatory)][array]$Relationships)
     return $Relationships
 }
 
 function Get-GdapRoleSummaryTable {
-    <#
-    .SYNOPSIS
-        Builds a summary table of number of role assignments per role.
-    #>
     param([Parameter(Mandatory)][array]$RoleAssignments)
     return $RoleAssignments
 }
 
 function Get-GdapRoleMatrixTable {
-    <#
-    .SYNOPSIS
-        Returns role assignment data suitable for matrix rendering.
-    #>
     param([Parameter(Mandatory)][array]$RoleAssignments)
     return $RoleAssignments
 }
