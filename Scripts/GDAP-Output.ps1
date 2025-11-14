@@ -1,30 +1,15 @@
 <#
 .SYNOPSIS
-    Output engine for the GDAP Export Toolset.
+    Output and orchestration helpers for GDAP export.
 
 .DESCRIPTION
-    This script receives:
-      • Relationships table
-      • Role Assignments table
-      • Role Summary table
-      • Role Matrix table
+    This module wires together:
+      • Graph connection (Ensure-GdapGraphConnection)
+      • Data retrieval (GDAP-Data.ps1 functions)
+      • CSV export to disk
 
-    And depending on user selection, outputs:
-      • Screen output
-      • CSV files
-      • JSON files
-      • HTML files
-      • Excel files (requires ImportExcel)
-
-    Every action is logged with:
-      - Timestamp
-      - Severity level
-      - Script name
-      - Function name
-
-.NOTES
-    Author: ChatGPT (Umetech Automation Suite)
-    File  : GDAP-Output.ps1
+    It exposes a single main entry point:
+      • Start-GdapExport
 #>
 
 # ---------------------------------------------------------------------
@@ -34,7 +19,7 @@ $Script:Name = 'GDAP-Output.ps1'
 
 
 # ---------------------------------------------------------------------
-# Logging helpers (fallback versions)
+# Logging helpers (fallback if main logger not loaded)
 # ---------------------------------------------------------------------
 
 if (-not (Get-Command Write-GdapLog -ErrorAction SilentlyContinue)) {
@@ -61,288 +46,141 @@ if (-not (Get-Command Write-GdapError -ErrorAction SilentlyContinue)) {
     }
 }
 
+Write-GdapLog -Level 'INFO' -Script $Script:Name -Function 'Init' -Message 'GDAP Output module loaded.'
+
 
 # ---------------------------------------------------------------------
-# Ensure output folder
+# Helper: Write data to CSV
 # ---------------------------------------------------------------------
 
-function Ensure-GdapOutputFolder {
+function Write-GdapCsv {
     <#
     .SYNOPSIS
-        Ensures output folder exists.
+        Writes an object collection to CSV with logging and folder create.
 
-    .OUTPUTS
-        The validated output folder path.
+    .PARAMETER Path
+        Full path to the CSV file.
+
+    .PARAMETER Data
+        Object collection to export.
     #>
 
-    param([Parameter(Mandatory)][string]$Path)
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$Data
+    )
 
-    $fn = 'Ensure-GdapOutputFolder'
+    $fn = 'Write-GdapCsv'
 
-    if (-not (Test-Path -Path $Path)) {
-        try {
-            New-Item -ItemType Directory -Path $Path -Force | Out-Null
-            Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message "Created output folder: $Path"
+    try {
+        $folder = Split-Path -Parent $Path
+        if (-not (Test-Path $folder)) {
+            New-Item -ItemType Directory -Path $folder -Force | Out-Null
         }
-        catch {
-            Write-GdapError -Script $Script:Name -Function $fn -Message "Failed to create output folder: $($_.Exception.Message)"
-            throw
-        }
-    }
-    else {
-        Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message "Using output folder: $Path"
-    }
 
-    return (Resolve-Path $Path).Path
-}
-
-
-# ---------------------------------------------------------------------
-# SCREEN OUTPUT
-# ---------------------------------------------------------------------
-
-function Write-GdapScreenOutput {
-    <#
-    .SYNOPSIS
-        Outputs data to screen (console).
-    #>
-
-    param(
-        [Parameter(Mandatory)]$Relationships,
-        [Parameter(Mandatory)]$RoleAssignments,
-        [Parameter(Mandatory)]$RoleSummary,
-        [Parameter(Mandatory)]$RoleMatrix
-    )
-
-    $fn = 'Write-GdapScreenOutput'
-    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message 'Displaying data on screen:'
-
-    "`n================ GDAP RELATIONSHIPS ================"
-    $Relationships | Format-Table -AutoSize
-    "`n================ ROLE ASSIGNMENTS ================"
-    $RoleAssignments | Format-Table -AutoSize
-    "`n================ ROLE SUMMARY ================"
-    $RoleSummary | Format-Table -AutoSize
-    "`n================ ROLE MATRIX (RAW) ================"
-    $RoleMatrix | Format-Table -AutoSize
-}
-
-
-# ---------------------------------------------------------------------
-# CSV OUTPUT
-# ---------------------------------------------------------------------
-
-function Write-GdapCsvOutput {
-    <#
-    .SYNOPSIS
-        Outputs all artifacts to CSV format.
-    #>
-
-    param(
-        [Parameter(Mandatory)]$Relationships,
-        [Parameter(Mandatory)]$RoleAssignments,
-        [Parameter(Mandatory)]$RoleSummary,
-        [Parameter(Mandatory)]$RoleMatrix,
-        [Parameter(Mandatory)][string]$OutputFolder
-    )
-
-    $fn = 'Write-GdapCsvOutput'
-
-    try {
-        $Relationships  | Export-Csv (Join-Path $OutputFolder 'Relationships.csv') -NoTypeInformation
-        $RoleAssignments | Export-Csv (Join-Path $OutputFolder 'RoleAssignments.csv') -NoTypeInformation
-        $RoleSummary    | Export-Csv (Join-Path $OutputFolder 'RoleSummary.csv') -NoTypeInformation
-        $RoleMatrix     | Export-Csv (Join-Path $OutputFolder 'RoleMatrix.csv') -NoTypeInformation
-
-        Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message 'CSV export complete.'
+        $Data | Export-Csv -Path $Path -NoTypeInformation -Encoding UTF8
+        Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message "Exported CSV: $Path"
     }
     catch {
-        Write-GdapError -Script $Script:Name -Function $fn -Message "CSV export failed: $($_.Exception.Message)"
+        Write-GdapError -Script $Script:Name -Function $fn -Message "Failed to export CSV '$Path': $($_.Exception.Message)"
+        throw
     }
 }
 
 
 # ---------------------------------------------------------------------
-# JSON OUTPUT
+# Main entry point: Start-GdapExport
 # ---------------------------------------------------------------------
 
-function Write-GdapJsonOutput {
+function Start-GdapExport {
     <#
     .SYNOPSIS
-        Outputs all artifacts to JSON format.
-    #>
+        Orchestrates the full GDAP export.
 
-    param(
-        [Parameter(Mandatory)]$Relationships,
-        [Parameter(Mandatory)]$RoleAssignments,
-        [Parameter(Mandatory)]$RoleSummary,
-        [Parameter(Mandatory)]$RoleMatrix,
-        [Parameter(Mandatory)][string]$OutputFolder
-    )
-
-    $fn = 'Write-GdapJsonOutput'
-
-    try {
-        $Relationships   | ConvertTo-Json -Depth 10 | Out-File (Join-Path $OutputFolder 'Relationships.json')
-        $RoleAssignments | ConvertTo-Json -Depth 10 | Out-File (Join-Path $OutputFolder 'RoleAssignments.json')
-        $RoleSummary     | ConvertTo-Json -Depth 10 | Out-File (Join-Path $OutputFolder 'RoleSummary.json')
-        $RoleMatrix      | ConvertTo-Json -Depth 10 | Out-File (Join-Path $OutputFolder 'RoleMatrix.json')
-
-        Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message 'JSON export complete.'
-    }
-    catch {
-        Write-GdapError -Script $Script:Name -Function $fn -Message "JSON export failed: $($_.Exception.Message)"
-    }
-}
-
-
-# ---------------------------------------------------------------------
-# HTML OUTPUT
-# ---------------------------------------------------------------------
-
-function Write-GdapHtmlOutput {
-    <#
-    .SYNOPSIS
-        Outputs data tables to HTML format.
-    #>
-
-    param(
-        [Parameter(Mandatory)]$Relationships,
-        [Parameter(Mandatory)]$RoleAssignments,
-        [Parameter(Mandatory)]$RoleSummary,
-        [Parameter(Mandatory)]$RoleMatrix,
-        [Parameter(Mandatory)][string]$OutputFolder
-    )
-
-    $fn = 'Write-GdapHtmlOutput'
-
-    try {
-        ($Relationships  | ConvertTo-Html -PreContent "<h2>GDAP Relationships</h2>") |
-            Out-File (Join-Path $OutputFolder 'Relationships.html')
-
-        ($RoleAssignments | ConvertTo-Html -PreContent "<h2>Role Assignments</h2>") |
-            Out-File (Join-Path $OutputFolder 'RoleAssignments.html')
-
-        ($RoleSummary | ConvertTo-Html -PreContent "<h2>Role Summary</h2>") |
-            Out-File (Join-Path $OutputFolder 'RoleSummary.html')
-
-        ($RoleMatrix | ConvertTo-Html -PreContent "<h2>Role Matrix</h2>") |
-            Out-File (Join-Path $OutputFolder 'RoleMatrix.html')
-
-        Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message 'HTML export complete.'
-    }
-    catch {
-        Write-GdapError -Script $Script:Name -Function $fn -Message "HTML export failed: $($_.Exception.Message)"
-    }
-}
-
-
-# ---------------------------------------------------------------------
-# EXCEL OUTPUT (ImportExcel)
-# ---------------------------------------------------------------------
-
-function Write-GdapExcelOutput {
-    <#
-    .SYNOPSIS
-        Outputs all data to a single Excel file using ImportExcel.
-
-    .NOTES
-        Requires: ImportExcel module
-    #>
-
-    param(
-        [Parameter(Mandatory)]$Relationships,
-        [Parameter(Mandatory)]$RoleAssignments,
-        [Parameter(Mandatory)]$RoleSummary,
-        [Parameter(Mandatory)]$RoleMatrix,
-        [Parameter(Mandatory)][string]$OutputFolder
-    )
-
-    $fn = 'Write-GdapExcelOutput'
-
-    $excelPath = Join-Path $OutputFolder 'GDAP-Export.xlsx'
-
-    try {
-        $Relationships  | Export-Excel -Path $excelPath -WorksheetName 'Relationships'  -AutoSize -TableName 'RelationshipsTable'
-        $RoleAssignments | Export-Excel -Path $excelPath -WorksheetName 'RoleAssignments' -AutoSize -TableName 'AssignmentsTable' -Append
-        $RoleSummary    | Export-Excel -Path $excelPath -WorksheetName 'RoleSummary'    -AutoSize -TableName 'SummaryTable' -Append
-        $RoleMatrix     | Export-Excel -Path $excelPath -WorksheetName 'RoleMatrix'     -AutoSize -TableName 'MatrixTable' -Append
-
-        Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message "Excel export ready: $excelPath"
-    }
-    catch {
-        Write-GdapError -Script $Script:Name -Function $fn -Message "Excel export failed: $($_.Exception.Message)"
-    }
-}
-
-
-# ---------------------------------------------------------------------
-# MASTER OUTPUT HANDLER
-# ---------------------------------------------------------------------
-
-function Write-GdapOutputs {
-    <#
-    .SYNOPSIS
-        Master handler. Produces all requested output formats.
-
-    .PARAMETER Relationships
-    .PARAMETER RoleAssignments
-    .PARAMETER RoleSummary
-    .PARAMETER RoleMatrix
+    .PARAMETER Status
+        High-level status filter: Active, Expired, or All.
 
     .PARAMETER Detail
-        Basic or Full (future expansion)
+        Currently informational only (e.g., Full, Summary).
 
     .PARAMETER Output
-        Screen, Csv, Json, Html, Excel, All
+        Output selection: All, Relationships, Roles, Matrix.
 
     .PARAMETER OutputFolder
-        Folder path for saved files
+        Destination folder for CSV exports.
     #>
 
+    [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]$Relationships,
-        [Parameter(Mandatory)]$RoleAssignments,
-        [Parameter(Mandatory)]$RoleSummary,
-        [Parameter(Mandatory)]$RoleMatrix,
-        [Parameter(Mandatory)][ValidateSet('Basic','Full')] [string]$Detail,
-        [Parameter(Mandatory)][ValidateSet('Screen','Csv','Json','Html','Excel','All')] [string]$Output,
+        [Parameter(Mandatory)][string]$Status,
+        [Parameter(Mandatory)][string]$Detail,
+        [Parameter(Mandatory)][string]$Output,
         [Parameter(Mandatory)][string]$OutputFolder
     )
 
-    $fn = 'Write-GdapOutputs'
+    $fn = 'Start-GdapExport'
 
-    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Processing output type '$Output'..."
+    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Starting GDAP export with Status='$Status', Detail='$Detail', Output='$Output', Folder='$OutputFolder'."
 
-    # Ensure folder exists
-    $OutputFolder = Ensure-GdapOutputFolder -Path $OutputFolder
-
-    # ---- SCREEN ----
-    if ($Output -eq 'Screen' -or $Output -eq 'All') {
-        Write-GdapScreenOutput -Relationships $Relationships -RoleAssignments $RoleAssignments -RoleSummary $RoleSummary -RoleMatrix $RoleMatrix
+    # ----------------- Determine status filter -----------------
+    $statusFilter = switch ($Status.ToLower()) {
+        'active'  { 'ActiveOnly'  }
+        'expired' { 'ExpiredOnly' }
+        default   { 'Both'        }
     }
 
-    # ---- CSV ----
-    if ($Output -eq 'Csv' -or $Output -eq 'All') {
-        Write-GdapCsvOutput -Relationships $Relationships -RoleAssignments $RoleAssignments -RoleSummary $RoleSummary -RoleMatrix $RoleMatrix -OutputFolder $OutputFolder
+    # ----------------- Ensure Graph connection -----------------
+    $scopes = @(
+        'Directory.Read.All',
+        'DelegatedAdminRelationship.Read.All',
+        'RoleManagement.Read.Directory'
+    )
+
+    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Ensuring Graph connection with scopes: $($scopes -join ', ')"
+    Ensure-GdapGraphConnection -Scopes $scopes
+
+    # ----------------- Retrieve relationships ------------------
+    $relationships = Get-GdapRelationships -StatusFilter $statusFilter
+
+    if (-not $relationships -or $relationships.Count -eq 0) {
+        Write-GdapLog -Level 'WARN' -Script $Script:Name -Function $fn -Message 'No GDAP relationships found; nothing to export.'
+        return
     }
 
-    # ---- JSON ----
-    if ($Output -eq 'Json' -or $Output -eq 'All') {
-        Write-GdapJsonOutput -Relationships $Relationships -RoleAssignments $RoleAssignments -RoleSummary $RoleSummary -RoleMatrix $RoleMatrix -OutputFolder $OutputFolder
+    # ----------------- Retrieve role definitions ---------------
+    $roleMap = Get-GdapRoleDefinitionsMap
+
+    # ----------------- Retrieve access assignments -------------
+    $assignments = Get-GdapAccessAssignments -Relationships $relationships -RoleMap $roleMap
+
+    # ----------------- Build tables ----------------------------
+    $relationshipsTable = Get-GdapRelationshipsTable -Relationships $relationships
+    $roleSummaryTable   = Get-GdapRoleSummaryTable   -RoleAssignments $assignments
+    $roleMatrixTable    = Get-GdapRoleMatrixTable    -RoleAssignments $assignments
+
+    # ----------------- Decide which outputs to write ----------
+    $outputMode = $Output.ToLower()
+
+    if ($outputMode -eq 'all' -or $outputMode -like '*relationships*') {
+        $path = Join-Path $OutputFolder 'GDAP-Relationships.csv'
+        Write-GdapCsv -Path $path -Data $relationshipsTable
     }
 
-    # ---- HTML ----
-    if ($Output -eq 'Html' -or $Output -eq 'All') {
-        Write-GdapHtmlOutput -Relationships $Relationships -RoleAssignments $RoleAssignments -RoleSummary $RoleSummary -RoleMatrix $RoleMatrix -OutputFolder $OutputFolder
+    if ($outputMode -eq 'all' -or $outputMode -like '*roles*') {
+        $path = Join-Path $OutputFolder 'GDAP-RolesSummary.csv'
+        Write-GdapCsv -Path $path -Data $roleSummaryTable
     }
 
-    # ---- EXCEL ----
-    if ($Output -eq 'Excel' -or $Output -eq 'All') {
-        Write-GdapExcelOutput -Relationships $Relationships -RoleAssignments $RoleAssignments -RoleSummary $RoleSummary -RoleMatrix $RoleMatrix -OutputFolder $OutputFolder
+    if ($outputMode -eq 'all' -or $outputMode -like '*matrix*') {
+        $path = Join-Path $OutputFolder 'GDAP-RoleMatrix.csv'
+        Write-GdapCsv -Path $path -Data $roleMatrixTable
     }
 
-    Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message 'All requested outputs generated.'
+    # ----------------- Summary ----------------------------
+    Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message (
+        "Export complete. Relationships=$($relationships.Count), " +
+        "Assignments=$($assignments.Count). Output folder: $OutputFolder"
+    )
 }
-
 # END OF FILE
