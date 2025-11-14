@@ -1,100 +1,135 @@
 <#
-.GDAP Bootstrap Loader
-Loads local scripts, checks GitHub for updates, and optionally updates on demand.
+    GDAP-Bootstrap.ps1
+    Auto-Updater, Auto-Unblocker, and Launcher for the GDAP Toolkit
 #>
 
 param(
-    [switch]$Update
+    [switch]$Update,
+    [switch]$RunExport,
+    [string]$Status,
+    [string]$Detail,
+    [string]$Output,
+    [string]$OutputFolder
 )
 
-$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-# ================================
-# GitHub Paths (Raw URLs)
-# ================================
-$GitHubBase = "https://raw.githubusercontent.com/jg00d3/GDAP/main/Scripts"
-$VersionUrl = "$GitHubBase/version.txt"
-
-$Files = @(
+# --------------------------- CONFIG ---------------------------
+$ScriptPath  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RemoteRoot  = "https://raw.githubusercontent.com/jg00d3/GDAP/main/Scripts"
+$FilesToManage = @(
+    "GDAP-Bootstrap.ps1",
+    "GDAP-Export.ps1",
     "GDAP-Modules.ps1",
     "GDAP-Graph.ps1",
     "GDAP-Data.ps1",
     "GDAP-Output.ps1",
-    "GDAP-Export.ps1"
+    "version.txt"
 )
 
-function Get-LocalVersion {
-    $localPath = Join-Path $ScriptRoot "version.txt"
-    if (Test-Path $localPath) {
-        return [version](Get-Content $localPath | Select-Object -First 1)
-    }
-    return [version]"0.0.0"
-}
+Write-Host "[Bootstrap] Starting…" -ForegroundColor Cyan
 
-function Get-RemoteVersion {
-    try {
-        $content = Invoke-WebRequest -Uri $VersionUrl -UseBasicParsing -ErrorAction Stop
-        return [version]($content.Content.Trim())
-    }
-    catch {
-        Write-Warning "Unable to check remote version from GitHub."
-        return $null
-    }
-}
 
-function Update-FilesFromGitHub {
-    Write-Host "`n[UPDATE] Downloading script updates..." -ForegroundColor Cyan
+# --------------------------- AUTO-UNBLOCK ---------------------------
+function Unblock-GdapFile {
+    param([string]$FileName)
 
-    foreach ($file in $Files + "version.txt") {
-        $url = "$GitHubBase/$file"
-        $dest = Join-Path $ScriptRoot $file
+    $Full = Join-Path $ScriptPath $FileName
+    $Zone = "$Full:Zone.Identifier"
 
+    if (Test-Path $Zone) {
         try {
-            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
-            Write-Host "[OK] Updated $file"
+            Remove-Item $Zone -Force
+            Write-Host "[Bootstrap] Unblocked $FileName (was blocked)" -ForegroundColor Yellow
         }
         catch {
-            Write-Warning "[FAIL] Could not update $file"
+            Write-Host "[Bootstrap][WARN] Could not unblock $FileName : $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+}
+
+# Auto-unblock *only* the GDAP files
+foreach ($file in $FilesToManage) {
+    Unblock-GdapFile -FileName $file
+}
+
+
+# --------------------------- VERSION CHECK ---------------------------
+$LocalVersionFile = Join-Path $ScriptPath "version.txt"
+$LocalVersion = "0.0.0"
+
+if (Test-Path $LocalVersionFile) {
+    $LocalVersion = (Get-Content $LocalVersionFile | Select-Object -First 1).Trim()
+}
+
+$RemoteVersion = (Invoke-WebRequest "$RemoteRoot/version.txt" -UseBasicParsing).Content.Trim()
+
+Write-Host "[Bootstrap] Local Version : $LocalVersion"
+Write-Host "[Bootstrap] Remote Version: $RemoteVersion"
+
+
+# Update needed?
+$DoUpdate = $Update -or ($LocalVersion -ne $RemoteVersion)
+
+if ($DoUpdate) {
+    Write-Host "`n[UPDATE] Downloading script updates..." -ForegroundColor Green
+
+    foreach ($file in $FilesToManage) {
+        $remote = "$RemoteRoot/$file"
+        $local  = Join-Path $ScriptPath $file
+
+        try {
+            Invoke-WebRequest $remote -OutFile $local -UseBasicParsing -ErrorAction Stop
+            Write-Host "[OK] Updated $file" -ForegroundColor Green
+        }
+        catch {
+            Write-Host "[ERROR] Failed to update $file : $($_.Exception.Message)" -ForegroundColor Red
         }
     }
 
     Write-Host "`n[UPDATE] Complete." -ForegroundColor Green
 }
-
-# ================================
-# UPDATE CHECK
-# ================================
-$localVersion  = Get-LocalVersion
-$remoteVersion = Get-RemoteVersion
-
-Write-Host "[Bootstrap] Local Version : $localVersion"
-Write-Host "[Bootstrap] Remote Version: $remoteVersion"
-
-if ($Update) {
-    Update-FilesFromGitHub
-}
-elseif ($remoteVersion -gt $localVersion) {
-    $answer = Read-Host "A new GDAP toolset version is available. Update now? (Y/N)"
-    if ($answer -match "^[Yy]") {
-        Update-FilesFromGitHub
-    }
-    else {
-        Write-Host "Skipping update."
-    }
+else {
+    Write-Host "[Bootstrap] Everything is up to date."
 }
 
-# ================================
-# LOAD MODULES
-# ================================
-foreach ($file in $Files) {
-    $full = Join-Path $ScriptRoot $file
-    if (Test-Path $full) {
-        . $full
-        Write-Host "[Load] Imported $file"
-    }
-    else {
-        Write-Warning "[Missing] $file not found."
-    }
+
+# --------------------------- AUTO-UNBLOCK AGAIN AFTER UPDATE ---------------------------
+foreach ($file in $FilesToManage) {
+    Unblock-GdapFile -FileName $file
 }
 
-Write-Host "`n[Bootstrap] GDAP environment ready.`n"
+
+# --------------------------- LOAD MODULE HELPERS ---------------------------
+$ModulesPath = Join-Path $ScriptPath "GDAP-Modules.ps1"
+if (Test-Path $ModulesPath) {
+    . $ModulesPath
+    Write-Host "[Load] Imported GDAP-Modules.ps1"
+}
+else {
+    Write-Host "[Bootstrap][ERROR] GDAP-Modules.ps1 missing — cannot continue." -ForegroundColor Red
+    exit
+}
+
+
+# --------------------------- OPTIONAL: RUN EXPORT ---------------------------
+if ($RunExport) {
+
+    $ExportScript = Join-Path $ScriptPath "GDAP-Export.ps1"
+    if (-not (Test-Path $ExportScript)) {
+        Write-Host "[Bootstrap][ERROR] GDAP-Export.ps1 not found." -ForegroundColor Red
+        exit
+    }
+
+    Write-Host "[Bootstrap] Running GDAP-Export.ps1…" -ForegroundColor Cyan
+
+    # Build argument list dynamically to forward parameters
+    $argsList = @()
+    if ($Status)       { $argsList += "-Status `"$Status`"" }
+    if ($Detail)       { $argsList += "-Detail `"$Detail`"" }
+    if ($Output)       { $argsList += "-Output `"$Output`"" }
+    if ($OutputFolder) { $argsList += "-OutputFolder `"$OutputFolder`"" }
+
+    & $ExportScript @argsList
+    exit
+}
+
+Write-Host "[Bootstrap] Update check complete. No further action requested."
