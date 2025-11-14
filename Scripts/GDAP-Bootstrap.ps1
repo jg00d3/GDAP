@@ -1,15 +1,10 @@
 <#
     GDAP-Bootstrap.ps1
-    Auto-Updater, Auto-Unblocker, and Launcher for the GDAP Toolkit
+    Auto-Unblock + Auto-Update + Menu Launcher
 #>
 
 param(
-    [switch]$Update,
-    [switch]$RunExport,
-    [string]$Status,
-    [string]$Detail,
-    [string]$Output,
-    [string]$OutputFolder
+    [switch]$Update
 )
 
 # --------------------------- CONFIG ---------------------------
@@ -46,7 +41,6 @@ function Unblock-GdapFile {
     }
 }
 
-# Auto-unblock *only* the GDAP files
 foreach ($file in $FilesToManage) {
     Unblock-GdapFile -FileName $file
 }
@@ -65,8 +59,6 @@ $RemoteVersion = (Invoke-WebRequest "$RemoteRoot/version.txt" -UseBasicParsing).
 Write-Host "[Bootstrap] Local Version : $LocalVersion"
 Write-Host "[Bootstrap] Remote Version: $RemoteVersion"
 
-
-# Update needed?
 $DoUpdate = $Update -or ($LocalVersion -ne $RemoteVersion)
 
 if ($DoUpdate) {
@@ -110,26 +102,50 @@ else {
 }
 
 
-# --------------------------- OPTIONAL: RUN EXPORT ---------------------------
-if ($RunExport) {
-
-    $ExportScript = Join-Path $ScriptPath "GDAP-Export.ps1"
-    if (-not (Test-Path $ExportScript)) {
-        Write-Host "[Bootstrap][ERROR] GDAP-Export.ps1 not found." -ForegroundColor Red
-        exit
-    }
-
-    Write-Host "[Bootstrap] Running GDAP-Export.ps1…" -ForegroundColor Cyan
-
-    # Build argument list dynamically to forward parameters
-    $argsList = @()
-    if ($Status)       { $argsList += "-Status `"$Status`"" }
-    if ($Detail)       { $argsList += "-Detail `"$Detail`"" }
-    if ($Output)       { $argsList += "-Output `"$Output`"" }
-    if ($OutputFolder) { $argsList += "-OutputFolder `"$OutputFolder`"" }
-
-    & $ExportScript @argsList
-    exit
+# --------------------------- MENU SYSTEM ---------------------------
+function Show-MainMenu {
+    Clear-Host
+    Write-Host ""
+    Write-Host "==============================" -ForegroundColor Cyan
+    Write-Host "         GDAP Toolkit" -ForegroundColor Cyan
+    Write-Host "==============================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "1. Run GDAP Export" -ForegroundColor White
+    Write-Host "2. Exit" -ForegroundColor White
+    Write-Host ""
+    return Read-Host "Select an option (1-2)"
 }
 
-Write-Host "[Bootstrap] Update check complete. No further action requested."
+
+# MAIN MENU LOOP
+while ($true) {
+
+    $choice = Show-MainMenu
+
+    switch ($choice) {
+
+        "1" {
+            $ExportScript = Join-Path $ScriptPath "GDAP-Export.ps1"
+
+            if (-not (Test-Path $ExportScript)) {
+                Write-Host "[Bootstrap][ERROR] GDAP-Export.ps1 not found." -ForegroundColor Red
+                pause
+                continue
+            }
+
+            Write-Host "`n[Bootstrap] Running GDAP-Export.ps1…" -ForegroundColor Cyan
+            & $ExportScript
+            pause
+        }
+
+        "2" {
+            Write-Host "Exiting. Goodbye!" -ForegroundColor Cyan
+            exit
+        }
+
+        default {
+            Write-Host "Invalid selection. Try again." -ForegroundColor Red
+            Start-Sleep -Seconds 1
+        }
+    }
+}
