@@ -3,15 +3,15 @@
     Data retrieval and table-building functions for the GDAP Export Tool.
 
 .DESCRIPTION
-    This script retrieves:
+    Retrieves:
       • GDAP delegated admin relationships
       • Role definitions
-      • Access assignments for each GDAP relationship
+      • Access assignments for each GDAP relationship (NEW API PATTERN)
 
-    It then reshapes the data into:
-      • A relationships table
-      • A role summary table
-      • A role assignment matrix table
+    Produces:
+      • Relationships table
+      • Role summary table
+      • Role matrix table
 
     Logging is standardized and tagged with:
       - Timestamp
@@ -19,9 +19,9 @@
       - Script name
       - Function name
 
-    NOTE:
-      Microsoft.Graph modules are installed/imported by GDAP-Modules.ps1.
-      This file does NOT import modules at top-level to avoid hangs.
+.NOTES
+    Author: ChatGPT (Umetech Automation Suite)
+    File  : GDAP-Data.ps1
 #>
 
 # ---------------------------------------------------------------------
@@ -31,7 +31,7 @@ $Script:Name = 'GDAP-Data.ps1'
 
 
 # ---------------------------------------------------------------------
-# Logging helpers (fallback if not already loaded)
+# Logging helpers (fallback if needed)
 # ---------------------------------------------------------------------
 
 if (-not (Get-Command Write-GdapLog -ErrorAction SilentlyContinue)) {
@@ -58,12 +58,31 @@ if (-not (Get-Command Write-GdapError -ErrorAction SilentlyContinue)) {
     }
 }
 
-# Initialization info only (no module import)
-Write-GdapLog -Level 'INFO' -Script $Script:Name -Function 'Init' -Message 'GDAP Data module loaded.'
+
+# ---------------------------------------------------------------------
+# Import Graph modules
+# ---------------------------------------------------------------------
+
+try {
+    Import-Module Microsoft.Graph.Beta -ErrorAction Stop
+    Write-GdapLog -Level 'OK' -Script $Script:Name -Function 'Import-Modules' -Message 'Imported Microsoft.Graph.Beta'
+}
+catch {
+    Write-GdapError -Script $Script:Name -Function 'Import-Modules' -Message "Failed to import Microsoft.Graph.Beta: $($_.Exception.Message)"
+    throw
+}
+
+try {
+    Import-Module Microsoft.Graph.Beta.RoleManagement -ErrorAction SilentlyContinue
+    Write-GdapLog -Level 'OK' -Script $Script:Name -Function 'Import-Modules' -Message 'Imported Microsoft.Graph.Beta.RoleManagement (optional)'
+}
+catch {
+    Write-GdapLog -Level 'WARN' -Script $Script:Name -Function 'Import-Modules' -Message 'Graph Beta RoleManagement module not available; continuing.'
+}
 
 
 # ---------------------------------------------------------------------
-# Role list (from your memory profile — 15 roles + 2 extras)
+# Role List (from your memory profile)
 # ---------------------------------------------------------------------
 
 $Script:RequiredRoles = @(
@@ -82,8 +101,6 @@ $Script:RequiredRoles = @(
     "SharePoint Administrator",
     "Teams Administrator",
     "User Administrator",
-
-    # Additional two roles:
     "Insights Business Leader",
     "Reports Reader"
 )
@@ -94,19 +111,6 @@ $Script:RequiredRoles = @(
 # ---------------------------------------------------------------------
 
 function Get-GdapRelationships {
-    <#
-    .SYNOPSIS
-        Retrieves GDAP delegated admin relationships for the Partner Tenant.
-
-    .PARAMETER StatusFilter
-        Acceptable values:
-           "ActiveOnly"
-           "ExpiredOnly"
-           "Both"
-
-    .OUTPUTS
-        Array of Delegated Admin Relationship objects
-    #>
 
     param(
         [ValidateSet('ActiveOnly','ExpiredOnly','Both')]
@@ -115,23 +119,21 @@ function Get-GdapRelationships {
     )
 
     $fn = 'Get-GdapRelationships'
-
     Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Retrieving delegated admin relationships..."
 
     try {
         $rels = Get-MgBetaTenantRelationshipDelegatedAdminRelationship -All -ErrorAction Stop
     }
     catch {
-        Write-GdapError -Script $Script:Name -Function $fn -Message "Failed to retrieve delegated admin relationships: $($_.Exception.Message)"
+        Write-GdapError -Script $Script:Name -Function $fn -Message "Failed to retrieve GDAP relationships: $($_.Exception.Message)"
         throw
     }
 
     if (-not $rels) {
-        Write-GdapLog -Level 'WARN' -Script $Script:Name -Function $fn -Message 'No GDAP relationships returned from Graph.'
+        Write-GdapLog -Level 'WARN' -Script $Script:Name -Function $fn -Message "No GDAP relationships returned."
         return @()
     }
 
-    # Apply status filter
     switch ($StatusFilter) {
         "ActiveOnly"  { $rels = $rels | Where-Object { $_.Status -eq "active" } }
         "ExpiredOnly" { $rels = $rels | Where-Object { $_.Status -in @("expired","terminated") } }
@@ -144,19 +146,13 @@ function Get-GdapRelationships {
 
 
 # ---------------------------------------------------------------------
-# Retrieve role definitions map (ById, ByName)
+# Retrieve role definitions (by ID and Name)
 # ---------------------------------------------------------------------
 
 function Get-GdapRoleDefinitionsMap {
-    <#
-    .SYNOPSIS
-        Retrieves all available role definitions and returns a map
-        grouped by RoleDefinitionId and DisplayName.
-    #>
 
     $fn = 'Get-GdapRoleDefinitionsMap'
-
-    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message 'Retrieving role definitions...'
+    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Retrieving role definitions..."
 
     try {
         $defs = Get-MgBetaRoleManagementDirectoryRoleDefinition -All -ErrorAction Stop
@@ -168,32 +164,18 @@ function Get-GdapRoleDefinitionsMap {
 
     Write-GdapLog -Level 'OK' -Script $Script:Name -Function $fn -Message "Retrieved $($defs.Count) total role definitions."
 
-    # Return grouped hash tables
     return @{
-        ById   = $defs | Group-Object -Property Id          -AsHashTable
+        ById   = $defs | Group-Object -Property Id -AsHashTable
         ByName = $defs | Group-Object -Property DisplayName -AsHashTable
     }
 }
 
 
 # ---------------------------------------------------------------------
-# Retrieve access assignments per GDAP relationship
+# UPDATED — Retrieve access assignments using NEW Graph API pattern
 # ---------------------------------------------------------------------
 
 function Get-GdapAccessAssignments {
-    <#
-    .SYNOPSIS
-        Retrieves access assignments (UnifiedRoles) for each GDAP relationship.
-
-    .PARAMETER Relationships
-        Array of Delegated Admin Relationship objects.
-
-    .PARAMETER RoleMap
-        Hash table from Get-GdapRoleDefinitionsMap.
-
-    .OUTPUTS
-        Array of PSCustomObject entries representing role assignments.
-    #>
 
     param(
         [Parameter(Mandatory)][array]$Relationships,
@@ -203,39 +185,54 @@ function Get-GdapAccessAssignments {
     $fn = 'Get-GdapAccessAssignments'
 
     if (-not $Relationships -or $Relationships.Count -eq 0) {
-        Write-GdapLog -Level 'WARN' -Script $Script:Name -Function $fn -Message 'No relationships passed in. Returning empty list.'
+        Write-GdapLog -Level 'WARN' -Script $Script:Name -Function $fn -Message 'No relationships passed in.'
         return @()
     }
 
-    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Retrieving access assignments for $($Relationships.Count) relationships..."
+    Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Retrieving access assignments (new API behavior)…"
 
     $results = New-Object System.Collections.Generic.List[object]
 
     foreach ($rel in $Relationships) {
 
-        Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Processing relationship '$($rel.DisplayName)' ($($rel.Id))"
+        Write-GdapLog -Level 'INFO' -Script $Script:Name -Function $fn -Message "Processing relationship '$($rel.DisplayName)' ($($rel.Id))..."
 
+        # Step 1: Retrieve assignments (without expand)
         try {
             $assignments = Get-MgBetaTenantRelationshipDelegatedAdminRelationshipAccessAssignment `
-                              -DelegatedAdminRelationshipId $rel.Id `
-                              -ExpandProperty accessDetails `
-                              -All `
-                              -ErrorAction Stop
+                -DelegatedAdminRelationshipId $rel.Id `
+                -All `
+                -ErrorAction Stop
         }
         catch {
-            Write-GdapError -Script $Script:Name -Function $fn -Message "Failed to read access assignments for relationship $($rel.Id): $($_.Exception.Message)"
+            Write-GdapError -Script $Script:Name -Function $fn -Message "Failed to list assignments: $($_.Exception.Message)"
             continue
         }
 
         foreach ($aa in $assignments) {
-            if (-not $aa.AccessDetails.UnifiedRoles) { continue }
 
-            foreach ($ur in $aa.AccessDetails.UnifiedRoles) {
-                $roleName = "<Unknown Role>"
+            # Step 2: Retrieve accessDetails separately
+            try {
+                $details = Get-MgBetaTenantRelationshipDelegatedAdminRelationshipAccessAssignmentAccessDetail `
+                    -DelegatedAdminRelationshipId $rel.Id `
+                    -DelegatedAdminAccessAssignmentId $aa.Id `
+                    -ErrorAction Stop
+            }
+            catch {
+                Write-GdapError -Script $Script:Name -Function $fn -Message "Failed to get accessDetails for assignment $($aa.Id): $($_.Exception.Message)"
+                continue
+            }
 
-                if ($RoleMap.ById.ContainsKey($ur.RoleDefinitionId)) {
-                    $roleName = $RoleMap.ById[$ur.RoleDefinitionId].DisplayName
-                }
+            if (-not $details.UnifiedRoles) { continue }
+
+            foreach ($ur in $details.UnifiedRoles) {
+
+                $roleName =
+                    if ($RoleMap.ById.ContainsKey($ur.RoleDefinitionId)) {
+                        $RoleMap.ById[$ur.RoleDefinitionId].DisplayName
+                    } else {
+                        "<Unknown Role>"
+                    }
 
                 $results.Add([pscustomobject]@{
                     RelationshipId    = $rel.Id
@@ -257,7 +254,7 @@ function Get-GdapAccessAssignments {
 
 
 # ---------------------------------------------------------------------
-# Table formatting helpers
+# Table formatting (simple pass-throughs)
 # ---------------------------------------------------------------------
 
 function Get-GdapRelationshipsTable {
