@@ -1,257 +1,100 @@
 <#
-.SYNOPSIS
-    Self-updating bootstrap installer for the GDAP Export Toolset.
-
-.DESCRIPTION
-    This script performs three major functions:
-
-      1. Self-update:
-         - Contacts your SharePoint "Scripts" folder.
-         - Checks version.txt.
-         - If newer, downloads the new bootstrap script.
-         - Replaces itself.
-         - Relaunches.
-
-      2. Environment Setup:
-         - Ensures C:\Scripts exists.
-         - Downloads updated copies of:
-               • GDAP-Export.ps1
-               • GDAP-Modules.ps1
-               • GDAP-Graph.ps1
-               • GDAP-Data.ps1
-               • GDAP-Output.ps1
-         - Unblocks all GDAP files.
-
-      3. Launch:
-         - Executes GDAP-Export.ps1.
-
-    This is the correct entry point for ANY system.
-
-.NOTES
-    Author  : ChatGPT (Umetech Automation Suite)
-    File    : GDAP-Bootstrap.ps1
-    Version : 1.0.0
+.GDAP Bootstrap Loader
+Loads local scripts, checks GitHub for updates, and optionally updates on demand.
 #>
 
-# ---------------------------------------------------------------------
-# Script metadata
-# ---------------------------------------------------------------------
-$Script:Name         = 'GDAP-Bootstrap.ps1'
-$Script:LocalVersion = [version]'1.0.0'
+param(
+    [switch]$Update
+)
 
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# ---------------------------------------------------------------------
-# SharePoint configuration
-# ---------------------------------------------------------------------
-# Confirmed path from you:
-#   /personal/jgoode/Documents/Scripts
-$ShareBase  = 'https://jmgent-my.sharepoint.com'
-$UserPath   = '/personal/jgoode'
-$FolderPath = '/personal/jgoode/Documents/Scripts'
+# ================================
+# GitHub Paths (Raw URLs)
+# ================================
+$GitHubBase = "https://raw.githubusercontent.com/jg00d3/GDAP/main/Scripts"
+$VersionUrl = "$GitHubBase/version.txt"
 
+$Files = @(
+    "GDAP-Modules.ps1",
+    "GDAP-Graph.ps1",
+    "GDAP-Data.ps1",
+    "GDAP-Output.ps1",
+    "GDAP-Export.ps1"
+)
 
-# ---------------------------------------------------------------------
-# Logging helpers
-# ---------------------------------------------------------------------
-
-function Write-BootLog {
-    param(
-        [string]$Level,
-        [string]$Function,
-        [string]$Message
-    )
-    $t = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Write-Host "[$t][$Level][$Script:Name][$Function] $Message"
+function Get-LocalVersion {
+    $localPath = Join-Path $ScriptRoot "version.txt"
+    if (Test-Path $localPath) {
+        return [version](Get-Content $localPath | Select-Object -First 1)
+    }
+    return [version]"0.0.0"
 }
 
-function Write-BootError {
-    param($Function,$Message)
-    Write-BootLog -Level 'ERROR' -Function $Function -Message $Message
-}
-
-
-# ---------------------------------------------------------------------
-# Build SharePoint download URL
-# ---------------------------------------------------------------------
-function Get-DownloadUrl {
-    param([Parameter(Mandatory)][string]$FileName)
-    return "$ShareBase$UserPath/_layouts/15/download.aspx?SourceUrl=$FolderPath/$FileName"
-}
-
-
-# ---------------------------------------------------------------------
-# Read remote version.txt
-# ---------------------------------------------------------------------
 function Get-RemoteVersion {
-    $fn = 'Get-RemoteVersion'
-    $url = Get-DownloadUrl -FileName 'version.txt'
-
     try {
-        Write-BootLog 'INFO' $fn "Checking version.txt at $url"
-        $content = (Invoke-WebRequest -Uri $url -UseBasicParsing -ErrorAction Stop).Content.Trim()
-        return [version]$content
+        $content = Invoke-WebRequest -Uri $VersionUrl -UseBasicParsing -ErrorAction Stop
+        return [version]($content.Content.Trim())
     }
     catch {
-        Write-BootLog 'WARN' $fn "Could not read remote version: $($_.Exception.Message)"
+        Write-Warning "Unable to check remote version from GitHub."
         return $null
     }
 }
 
+function Update-FilesFromGitHub {
+    Write-Host "`n[UPDATE] Downloading script updates..." -ForegroundColor Cyan
 
-# ---------------------------------------------------------------------
-# Self-update logic
-# ---------------------------------------------------------------------
-function Invoke-BootstrapSelfUpdate {
+    foreach ($file in $Files + "version.txt") {
+        $url = "$GitHubBase/$file"
+        $dest = Join-Path $ScriptRoot $file
 
-    $fn = 'Invoke-BootstrapSelfUpdate'
-
-    $remoteVersion = Get-RemoteVersion
-    if (-not $remoteVersion) { return }
-
-    if ($remoteVersion -le $Script:LocalVersion) {
-        Write-BootLog 'INFO' $fn "Bootstrap is up to date (local $Script:LocalVersion, remote $remoteVersion)"
-        return
-    }
-
-    Write-BootLog 'INFO' $fn "Updating bootstrap from $Script:LocalVersion to $remoteVersion..."
-
-    $selfPath = $MyInvocation.MyCommand.Path
-    $tempPath = "${selfPath}.new"
-    $url      = Get-DownloadUrl -FileName 'GDAP-Bootstrap.ps1'
-
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $tempPath -UseBasicParsing -ErrorAction Stop
-        Move-Item -Path $tempPath -Destination $selfPath -Force
-        Write-BootLog 'OK' $fn "Bootstrap updated. Relaunching..."
-        & $selfPath
-        exit
-    }
-    catch {
-        Write-BootError $fn "Failed updating bootstrap: $($_.Exception.Message)"
-    }
-}
-
-
-# ---------------------------------------------------------------------
-# Ensure C:\Scripts exists
-# ---------------------------------------------------------------------
-function Ensure-ScriptsFolder {
-    $fn = 'Ensure-ScriptsFolder'
-
-    $path = 'C:\Scripts'
-
-    if (-not (Test-Path -Path $path)) {
         try {
-            New-Item -Path $path -ItemType Directory -Force | Out-Null
-            Write-BootLog 'OK' $fn "Created $path"
+            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
+            Write-Host "[OK] Updated $file"
         }
         catch {
-            Write-BootError $fn "Failed creating $path: $($_.Exception.Message)"
-            throw
+            Write-Warning "[FAIL] Could not update $file"
         }
+    }
+
+    Write-Host "`n[UPDATE] Complete." -ForegroundColor Green
+}
+
+# ================================
+# UPDATE CHECK
+# ================================
+$localVersion  = Get-LocalVersion
+$remoteVersion = Get-RemoteVersion
+
+Write-Host "[Bootstrap] Local Version : $localVersion"
+Write-Host "[Bootstrap] Remote Version: $remoteVersion"
+
+if ($Update) {
+    Update-FilesFromGitHub
+}
+elseif ($remoteVersion -gt $localVersion) {
+    $answer = Read-Host "A new GDAP toolset version is available. Update now? (Y/N)"
+    if ($answer -match "^[Yy]") {
+        Update-FilesFromGitHub
     }
     else {
-        Write-BootLog 'OK' $fn "Using existing folder: $path"
-    }
-
-    return $path
-}
-
-
-# ---------------------------------------------------------------------
-# Download all GDAP scripts
-# ---------------------------------------------------------------------
-function Download-GdapFiles {
-    param([string]$TargetFolder)
-
-    $fn = 'Download-GdapFiles'
-
-    $files = @(
-        'GDAP-Export.ps1',
-        'GDAP-Modules.ps1',
-        'GDAP-Graph.ps1',
-        'GDAP-Data.ps1',
-        'GDAP-Output.ps1'
-    )
-
-    foreach ($file in $files) {
-        $url  = Get-DownloadUrl -FileName $file
-        $dest = Join-Path $TargetFolder $file
-
-        try {
-            Write-BootLog 'INFO' $fn "Downloading $file..."
-            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
-            Write-BootLog 'OK' $fn "$file downloaded."
-        }
-        catch {
-            Write-BootError $fn "Failed downloading $file: $($_.Exception.Message)"
-        }
+        Write-Host "Skipping update."
     }
 }
 
-
-# ---------------------------------------------------------------------
-# Unblock downloaded scripts
-# ---------------------------------------------------------------------
-function Unblock-GdapFiles {
-    param([string]$TargetFolder)
-
-    $fn = 'Unblock-GdapFiles'
-
-    $pattern = Join-Path $TargetFolder 'GDAP-*.ps1'
-
-    foreach ($file in (Get-Item $pattern -ErrorAction SilentlyContinue)) {
-        try {
-            Unblock-File -Path $file.FullName
-            Write-BootLog 'OK' $fn "Unblocked $($file.Name)"
-        }
-        catch {
-            Write-BootLog 'WARN' $fn "Could not unblock $($file.Name): $($_.Exception.Message)"
-        }
+# ================================
+# LOAD MODULES
+# ================================
+foreach ($file in $Files) {
+    $full = Join-Path $ScriptRoot $file
+    if (Test-Path $full) {
+        . $full
+        Write-Host "[Load] Imported $file"
+    }
+    else {
+        Write-Warning "[Missing] $file not found."
     }
 }
 
-
-# ---------------------------------------------------------------------
-# Launch GDAP-Export.ps1
-# ---------------------------------------------------------------------
-function Start-GdapExport {
-    param([string]$TargetFolder)
-
-    $fn = 'Start-GdapExport'
-
-    $path = Join-Path $TargetFolder 'GDAP-Export.ps1'
-
-    if (-not (Test-Path $path)) {
-        Write-BootError $fn "GDAP-Export.ps1 not found at $path"
-        return
-    }
-
-    Write-BootLog 'INFO' $fn "Launching GDAP-Export.ps1..."
-    & $path   # pass on any cmdline params?
-}
-
-
-# ---------------------------------------------------------------------
-# MAIN EXECUTION
-# ---------------------------------------------------------------------
-
-Write-BootLog 'INFO' 'Main' "Starting GDAP Bootstrap (local $Script:LocalVersion)."
-
-# Self-update
-Invoke-BootstrapSelfUpdate
-
-# Ensure folder
-$target = Ensure-ScriptsFolder
-
-# Download all script files
-Download-GdapFiles -TargetFolder $target
-
-# Ensure they aren't blocked by Windows
-Unblock-GdapFiles -TargetFolder $target
-
-# Launch the actual export tool
-Start-GdapExport -TargetFolder $target
-
-Write-BootLog 'OK' 'Main' "Bootstrap completed."
-# END OF FILE
+Write-Host "`n[Bootstrap] GDAP environment ready.`n"
